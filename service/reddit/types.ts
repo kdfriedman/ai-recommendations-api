@@ -23,6 +23,7 @@ export type SubredditResponseDataModel = {
   kind: string;
   kindType: string | null;
   title: string;
+  num_comments?: number;
 };
 
 export type SubRedditResponse = {

@@ -71,24 +71,21 @@ export const redditApi = {
       return null;
     }
   },
-  async searchReddit(queryParams: string, accessToken: string, RESULTS_LIMIT: number = 100) {
+  async searchReddit(
+    queryParams: string,
+    accessToken: string,
+    RESULTS_LIMIT: number = 100,
+    NUM_OF_COMMENTS_MIN: number = 5
+  ) {
     let searchResultsAmount = 0;
+    // store reddit pagination id to fetch next batch of threads
     let searchResultsPaginatedAfterID: string | null = "";
-    let searchResults:
-      | {
-          subreddit_id: string;
-          id: string;
-          permalink: string;
-          subreddit: string;
-          selftext: string;
-          kind: string;
-          kindType: string | null;
-          title: string;
-        }[] = [];
+    let searchResults: SubredditResponseDataModel[] = [];
     if (!queryParams) return null;
 
     while (searchResultsAmount <= RESULTS_LIMIT || searchResultsPaginatedAfterID === null) {
       try {
+        // only add after query param when paginated after id exists (next page)
         const response: SubRedditResponse = await getData(
           `${process.env.REDDIT_API_HOST}/search/${queryParams}${
             searchResultsPaginatedAfterID ? `&after=${searchResultsPaginatedAfterID}` : ""
@@ -102,19 +99,27 @@ export const redditApi = {
             },
           }
         );
-        response?.data?.children?.forEach((child) => {
-          searchResults.push({
-            subreddit_id: child?.data?.subreddit_id,
-            id: child?.data?.id,
-            permalink: child?.data?.permalink,
-            subreddit: child?.data?.subreddit,
-            selftext: child?.data?.selftext,
-            kind: child?.kind,
-            kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
-            title: child?.data?.title,
-          });
-        });
         searchResultsAmount += response.data.children.length;
+
+        for (let child of response?.data?.children) {
+          const numOfComments = child?.data?.num_comments ?? 0;
+          // only store threads with more than comment minimum
+          if (numOfComments >= NUM_OF_COMMENTS_MIN) {
+            searchResults.push({
+              subreddit_id: child?.data?.subreddit_id,
+              id: child?.data?.id,
+              permalink: child?.data?.permalink,
+              subreddit: child?.data?.subreddit,
+              selftext: child?.data?.selftext,
+              kind: child?.kind,
+              kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
+              title: child?.data?.title,
+              num_comments: child?.data?.num_comments,
+            });
+          }
+        }
+
+        // if after paginated id is null no more results exist from reddit search
         if (!response.data.after) {
           searchResultsPaginatedAfterID = null;
           break;
@@ -136,7 +141,7 @@ export const redditApi = {
     if (!Array.isArray(listOfSubRedditURIs) || listOfSubRedditURIs.length === 0) {
       return null;
     }
-    const listOfSubRedditPayloads = await Promise.all(
+    const listOfSubRedditPayloads: Array<SubredditResponseDataModel[]> = await Promise.all(
       listOfSubRedditURIs.map(async (subreddit) => {
         const response: SubRedditResponse = await getData(
           `${process.env.REDDIT_API_HOST}/r/${subreddit}/search/${queryParams}`,
@@ -157,8 +162,10 @@ export const redditApi = {
             subreddit: child?.data?.subreddit,
             selftext: child?.data?.selftext,
             kind: child?.kind,
+            // had to use as keyof to handle specific object keys from const
             kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
             title: child?.data?.title,
+            num_comments: child?.data?.num_comments,
           };
         });
       })
@@ -168,7 +175,8 @@ export const redditApi = {
   async getRedditThreadComments(
     listOfThreadPayloads: SubredditResponseDataModel[],
     accessToken: string,
-    queryParams: string = ""
+    queryParams: string = "",
+    COMMENT_TOTAL_MIN: number = 5
   ) {
     try {
       const threadAllComments = await Promise.all(
@@ -191,6 +199,7 @@ export const redditApi = {
             })
             .map((commentPayload) => {
               return {
+                commentTotal: threadPayload?.num_comments,
                 comments: commentPayload.data.children
                   .filter((comment) => !comment.data.distinguished)
                   .map((comment) => {
@@ -212,7 +221,7 @@ export const redditApi = {
               };
             });
           return listOfCommentPayloads.filter(
-            (commentPayload) => commentPayload && commentPayload.comments.length > 0
+            (commentPayload) => commentPayload && commentPayload.comments.length > COMMENT_TOTAL_MIN
           );
         })
       );
@@ -223,61 +232,49 @@ export const redditApi = {
     }
   },
 
-  async initRedditService(query: string) {
+  async initRedditService(subreddits: string[], query: string) {
     const accessToken = await this.getRedditAppAccessToken();
-    if (!accessToken) return;
+    if (!accessToken) {
+      console.log("Error: reddit access code is invalid");
+      return null;
+    }
 
-    const redditSearchResults = await this.searchReddit(
+    // const redditSearchResults = await this.searchReddit(
+    //   parseQueryParams({
+    //     q: query,
+    //     t: "year",
+    //   }),
+    //   accessToken,
+    //   1000,
+    //   10
+    // );
+    // return [...new Set((redditSearchResults || [])?.map((searchResults) => searchResults.subreddit))].sort();
+
+    const mostCommentedThreads = await this.searchWithinSubreddits(
+      subreddits,
+      accessToken,
       parseQueryParams({
         q: query,
+        sort: "relevance",
         t: "year",
-      }),
-      accessToken,
-      1000
+        restrict_sr: "1",
+      })
     );
 
-    return redditSearchResults;
+    const mostCommentedUniqueThreads = (mostCommentedThreads || []).filter(
+      (thread, i, threads) => threads.findIndex((t) => t.permalink === thread.permalink) === i
+    );
 
-    // const listOfSubreddits = process.env.REDDIT_SUBREDDIT_LIST
-    //   ? process.env.REDDIT_SUBREDDIT_LIST.split(",")
-    //   : null;
+    if (mostCommentedUniqueThreads.length === 0) {
+      return null;
+    }
 
-    // const mostCommentedThreadQueries = await Promise.allSettled(
-    //   threadSearchQueries.map(
-    //     async (query) =>
-    //       await getRedditSubReddits(
-    //         listOfSubreddits,
-    //         accessToken,
-    //         parseQueryParams({
-    //           q: query,
-    //           sort: "comments",
-    //           t: "year",
-    //           type: REDDIT_API_TYPE_PREFIXES.t3,
-    //           restrict_sr: "1",
-    //           limit: "100",
-    //         })
-    //       )
-    //   )
-    // );
-
-    // const mostCommentedThreads = mostCommentedThreadQueries
-    //   .filter(
-    //     (
-    //       mostCommentedThreadQuery
-    //     ): mostCommentedThreadQuery is PromiseFulfilledResult<SubredditResponseDataModel[]> =>
-    //       mostCommentedThreadQuery.status === "fulfilled" && mostCommentedThreadQuery.value !== null
-    //   )
-    //   .flatMap((comment) => comment.value);
-
-    // const mostCommentedUniqueThreads = mostCommentedThreads.filter(
-    //   (thread, i, threads) => threads.findIndex((t) => t.permalink === thread.permalink) === i
-    // );
-
-    // if (!Array.isArray(mostCommentedUniqueThreads) || mostCommentedUniqueThreads.length === 0) {
-    //   return;
-    // }
-
-    // const threadCommentsPayload = await getRedditThreadComments(threads, accessToken);
-    // return threadCommentsPayload;
+    const threadCommentsPayload = await this.getRedditThreadComments(
+      mostCommentedUniqueThreads,
+      accessToken,
+      "",
+      5
+    );
+    return threadCommentsPayload?.filter((threadCommentPayload) => threadCommentPayload.comments.length > 5);
   },
 };
