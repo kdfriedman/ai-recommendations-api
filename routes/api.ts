@@ -1,7 +1,6 @@
 import express from "express";
 export const router = express.Router();
 import { redditApi } from "../service/reddit/reddit";
-import { parseQueryParams } from "../service/util";
 
 router.post("/createCategory", async (req, res) => {
   if (!req?.body?.subreddits || !Array.isArray(req?.body?.subreddits)) {

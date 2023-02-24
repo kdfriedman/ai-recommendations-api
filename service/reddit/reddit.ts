@@ -1,3 +1,4 @@
+import fs from "fs/promises";
 import { getData } from "../service";
 import { REDDIT_API_TYPE_PREFIXES } from "../reddit/constants";
 import { parseQueryParams } from "../util";
@@ -12,6 +13,7 @@ import {
 export const redditApi = {
   async getRedditAppAccessToken() {
     try {
+      // must be in base64 format for basic auth header
       const credentials = Buffer.from(
         `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
       ).toString("base64");
@@ -179,8 +181,13 @@ export const redditApi = {
     COMMENT_TOTAL_MIN: number = 5
   ) {
     try {
+      const commentReplies: {
+        commentReplies: {};
+        parentCommentId: string;
+      }[] = [];
       const threadAllComments = await Promise.all(
-        listOfThreadPayloads.map(async (threadPayload) => {
+        [listOfThreadPayloads[0]].map(async (threadPayload) => {
+          // referencing first in array as test, TODO: remove 0 index and pass entire arr
           const response: GetThreadCommentsResponse = await getData(
             `${process.env.REDDIT_API_HOST}${threadPayload.permalink}${queryParams}`,
             {
@@ -192,7 +199,7 @@ export const redditApi = {
               },
             }
           );
-
+          // await fs.writeFile("comments.json", JSON.stringify(response));
           const listOfCommentPayloads = response
             .filter((commentPayload) => {
               return commentPayload.data?.children?.some((childComment) => childComment.kind === "t1");
@@ -201,8 +208,10 @@ export const redditApi = {
               return {
                 commentTotal: threadPayload?.num_comments,
                 comments: commentPayload.data.children
+                  // filter out mod comments
                   .filter((comment) => !comment.data.distinguished)
                   .map((comment) => {
+                    // TODO: consolidate comment reply tree and add into top comment object
                     return {
                       commentId: comment.data.id,
                       topCommentText: comment.data.body,
@@ -258,6 +267,7 @@ export const redditApi = {
         sort: "relevance",
         t: "year",
         restrict_sr: "1",
+        limit: "100",
       })
     );
 

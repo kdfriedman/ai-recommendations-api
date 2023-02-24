@@ -43,6 +43,7 @@ export type ThreadResponseDataModel = {
   body: string;
   ups: string;
   distinguished: string | null;
+  replies?: GetThreadCommentsResponse | string;
 };
 
 export type GetThreadCommentsResponse = {
