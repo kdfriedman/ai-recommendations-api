@@ -43,10 +43,10 @@ export type ThreadResponseDataModel = {
   body: string;
   ups: string;
   distinguished: string | null;
-  replies?: GetThreadCommentsResponse | string;
+  replies: ThreadCommentReplyResponse | string;
 };
 
-export type GetThreadCommentsResponse = {
+export type ThreadCommentsResponse = {
   kind: string;
   data: {
     children: {
@@ -55,3 +55,41 @@ export type GetThreadCommentsResponse = {
     }[];
   };
 }[];
+
+export type CommentResponseDataModel =
+  | {
+      kind: "t1";
+      data: ThreadResponseDataModel;
+    }
+  | {
+      kind: "more";
+      data: MoreReplyCommentDataModel;
+    };
+
+export type ThreadCommentReplyResponse = {
+  kind: string;
+  data: {
+    children: CommentResponseDataModel[];
+  };
+};
+
+export type MoreReplyCommentDataModel = {
+  count: number;
+  name: string;
+  id: string;
+  parent_id: string;
+  depth: number;
+  children: string[];
+};
+
+export type ThreadCommentsDataModel = {
+  commentTotal: number | undefined;
+  comments: {
+    commentId: string;
+    topCommentText: string;
+    upvotes: string;
+    replies: string | null;
+  }[];
+};
+
+export type ThreadDataModel = SubredditResponseDataModel & ThreadCommentsDataModel;

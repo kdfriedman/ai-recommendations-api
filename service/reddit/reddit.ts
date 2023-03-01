@@ -2,16 +2,40 @@ import fs from "fs/promises";
 import { getData } from "../service";
 import { REDDIT_API_TYPE_PREFIXES } from "../reddit/constants";
 import { parseQueryParams } from "../util";
+import { findByValue } from "../../util/util";
 import {
   RedditApiTypePrefixes,
   OAuth2,
   SubredditResponseDataModel,
   SubRedditResponse,
-  GetThreadCommentsResponse,
+  ThreadCommentsResponse,
+  ThreadCommentReplyResponse,
+  MoreReplyCommentDataModel,
+  ThreadDataModel,
 } from "../reddit/types";
 
 export const redditApi = {
-  async getRedditAppAccessToken() {
+  consolidatedReplies: "",
+  moreReplies: [] as MoreReplyCommentDataModel[],
+  conslidateCommentReplies(replies: ThreadCommentReplyResponse) {
+    if (!replies?.data?.children) {
+      return null;
+    }
+    for (const reply of replies?.data?.children) {
+      if (reply.kind === "more") {
+        console.log(replies.data);
+        this.moreReplies.push(reply.data);
+        continue;
+      }
+      const formattedReply = reply.data.body.trim().replace(/\n/g, "");
+      this.consolidatedReplies += `COMMENT_START-${formattedReply}`; // TODO: after testing, remove COMMENT_START
+      if (typeof reply.data.replies !== "string") {
+        this.conslidateCommentReplies(reply.data.replies);
+      }
+    }
+    return this.consolidatedReplies;
+  },
+  async getOAuthToken() {
     try {
       // must be in base64 format for basic auth header
       const credentials = Buffer.from(
@@ -32,7 +56,7 @@ export const redditApi = {
       return null;
     }
   },
-  async getRedditSubReddits(
+  async getThreadsBySubreddit(
     listOfSubRedditURIs: Array<string> | null,
     accessToken: string,
     sort: string = "",
@@ -73,7 +97,7 @@ export const redditApi = {
       return null;
     }
   },
-  async searchReddit(
+  async getAllThreadsByQuery(
     queryParams: string,
     accessToken: string,
     RESULTS_LIMIT: number = 100,
@@ -135,7 +159,7 @@ export const redditApi = {
     }
     return searchResults;
   },
-  async searchWithinSubreddits(
+  async getSubredditThreadsByQuery(
     listOfSubRedditURIs: Array<string> | null,
     accessToken: string,
     queryParams: string = ""
@@ -143,10 +167,15 @@ export const redditApi = {
     if (!Array.isArray(listOfSubRedditURIs) || listOfSubRedditURIs.length === 0) {
       return null;
     }
-    const listOfSubRedditPayloads: Array<SubredditResponseDataModel[]> = await Promise.all(
-      listOfSubRedditURIs.map(async (subreddit) => {
+    const listOfSubRedditPayloads: Array<SubredditResponseDataModel> = [];
+    const threadChildren: Array<{
+      kind: string;
+      data: SubredditResponseDataModel;
+    }> = [];
+    try {
+      for (const subredditURI of listOfSubRedditURIs) {
         const response: SubRedditResponse = await getData(
-          `${process.env.REDDIT_API_HOST}/r/${subreddit}/search/${queryParams}`,
+          `${process.env.REDDIT_API_HOST}/r/${subredditURI}/search/${queryParams}`,
           {
             method: "GET",
             headers: {
@@ -156,39 +185,56 @@ export const redditApi = {
             },
           }
         );
-        return response?.data?.children.map((child) => {
-          return {
-            subreddit_id: child?.data?.subreddit_id,
-            id: child?.data?.id,
-            permalink: child?.data?.permalink,
-            subreddit: child?.data?.subreddit,
-            selftext: child?.data?.selftext,
-            kind: child?.kind,
-            // had to use as keyof to handle specific object keys from const
-            kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
-            title: child?.data?.title,
-            num_comments: child?.data?.num_comments,
-          };
+        threadChildren.push(...response.data.children);
+        // paginate over all available cursors
+        let paginatedNextCursor = response.data.after;
+        while (paginatedNextCursor) {
+          console.log(`paginating results in ${subredditURI} with after id: ${paginatedNextCursor}`);
+          const paginatedResponse: SubRedditResponse = await getData(
+            `${process.env.REDDIT_API_HOST}/r/${subredditURI}/search/${queryParams}&after=${paginatedNextCursor}`,
+            {
+              method: "GET",
+              headers: {
+                "User-Agent": process.env.REDDIT_UNIQUE_USER_AGENT || "node:my-unique-app:v1.0.0",
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          threadChildren.push(...paginatedResponse.data.children);
+          paginatedNextCursor = paginatedResponse.data.after;
+        }
+      }
+      for (const child of threadChildren) {
+        listOfSubRedditPayloads.push({
+          subreddit_id: child?.data?.subreddit_id,
+          id: child?.data?.id,
+          permalink: child?.data?.permalink,
+          subreddit: child?.data?.subreddit,
+          selftext: child?.data?.selftext,
+          kind: child?.kind,
+          // had to use as keyof to handle specific object keys from const
+          kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
+          title: child?.data?.title,
+          num_comments: child?.data?.num_comments,
         });
-      })
-    );
-    return listOfSubRedditPayloads.flat();
+      }
+      return listOfSubRedditPayloads;
+    } catch (err) {
+      console.log(err);
+      return null;
+    }
   },
-  async getRedditThreadComments(
+  async getThreadComments(
     listOfThreadPayloads: SubredditResponseDataModel[],
     accessToken: string,
     queryParams: string = "",
-    COMMENT_TOTAL_MIN: number = 5
+    COMMENT_TOTAL_MIN: number = 0
   ) {
     try {
-      const commentReplies: {
-        commentReplies: {};
-        parentCommentId: string;
-      }[] = [];
       const threadAllComments = await Promise.all(
-        [listOfThreadPayloads[0]].map(async (threadPayload) => {
-          // referencing first in array as test, TODO: remove 0 index and pass entire arr
-          const response: GetThreadCommentsResponse = await getData(
+        listOfThreadPayloads.map(async (threadPayload) => {
+          const response: ThreadCommentsResponse = await getData(
             `${process.env.REDDIT_API_HOST}${threadPayload.permalink}${queryParams}`,
             {
               method: "GET",
@@ -199,7 +245,7 @@ export const redditApi = {
               },
             }
           );
-          // await fs.writeFile("comments.json", JSON.stringify(response));
+          // filter out link types and only keep comment types
           const listOfCommentPayloads = response
             .filter((commentPayload) => {
               return commentPayload.data?.children?.some((childComment) => childComment.kind === "t1");
@@ -211,22 +257,27 @@ export const redditApi = {
                   // filter out mod comments
                   .filter((comment) => !comment.data.distinguished)
                   .map((comment) => {
-                    // TODO: consolidate comment reply tree and add into top comment object
+                    // recursively search comment tree and combine all comment replies into one large string of text
+                    const commentReplies =
+                      typeof comment?.data?.replies !== "string"
+                        ? this.conslidateCommentReplies(comment?.data?.replies)
+                        : null;
                     return {
                       commentId: comment.data.id,
                       topCommentText: comment.data.body,
                       upvotes: comment.data.ups,
+                      replies: commentReplies,
                     };
                   }),
-                threadTitle: threadPayload.selftext,
                 subreddit_id: threadPayload.subreddit_id,
-                threadId: threadPayload.id,
+                id: threadPayload.id,
                 permalink: threadPayload.permalink,
                 subreddit: threadPayload.subreddit,
                 selftext: threadPayload.selftext,
                 kind: threadPayload.kind,
                 kindType: threadPayload.kindType,
                 title: threadPayload.title,
+                num_comments: threadPayload.num_comments,
               };
             });
           return listOfCommentPayloads.filter(
@@ -240,51 +291,83 @@ export const redditApi = {
       return null;
     }
   },
+  async getMoreReplies(
+    moreReplies: MoreReplyCommentDataModel[],
+    threadComments: ThreadDataModel[],
+    accessToken: string
+  ) {
+    for (const reply of [moreReplies[0]]) {
+      // TODO: reference old reddit morecomments call and update logic below
+      // look into using FormData to send in body vs JSON stringify vs string
+      // also every example has t3_ portion with separate id, figure out where that comes from?
+      try {
+        // const response: unknown = await getData(`${process.env.REDDIT_API_HOST}/api/morechildren`, {
+        //   method: "POST",
+        //   headers: {
+        //     "User-Agent": process.env.REDDIT_UNIQUE_USER_AGENT || "node:my-unique-app:v1.0.0",
+        //     Authorization: `Bearer ${accessToken}`,
+        //     "Content-Type": "application/json",
+        //   },
+        //   // `link_id=${reply.parent_id}&children=${reply.children.join(",")}&limit_children=true`
+        //   body: `link_id=${'test'}&children=${reply.children.join(
+        //     ","
+        //   )}&limit_children=true`,
+        // });
+        // console.log(response);
+      } catch (err) {
+        console.log(err);
+        break;
+      }
+    }
+    return threadComments;
+  },
 
-  async initRedditService(subreddits: string[], query: string) {
-    const accessToken = await this.getRedditAppAccessToken();
+  // joinMoreRepliesIntoCommentThreads() {
+  //   // findByValue
+  // },
+  async initRedditService(subreddits: string[], queries: string[]) {
+    const accessToken = await this.getOAuthToken();
     if (!accessToken) {
       console.log("Error: reddit access code is invalid");
       return null;
     }
 
-    // const redditSearchResults = await this.searchReddit(
-    //   parseQueryParams({
-    //     q: query,
-    //     t: "year",
-    //   }),
-    //   accessToken,
-    //   1000,
-    //   10
-    // );
-    // return [...new Set((redditSearchResults || [])?.map((searchResults) => searchResults.subreddit))].sort();
-
-    const mostCommentedThreads = await this.searchWithinSubreddits(
-      subreddits,
-      accessToken,
-      parseQueryParams({
-        q: query,
-        sort: "relevance",
-        t: "year",
-        restrict_sr: "1",
-        limit: "100",
-      })
+    const subredditSearchQueries = queries.map(async (query) => {
+      return await this.getSubredditThreadsByQuery(
+        subreddits,
+        accessToken,
+        parseQueryParams({
+          q: query,
+          sort: "relevance",
+          t: "year",
+          restrict_sr: "1",
+          limit: "100",
+        })
+      );
+    });
+    const mostRelevantThreadsBasedOnQueries = await Promise.all(subredditSearchQueries);
+    const mostRelevantThreads = mostRelevantThreadsBasedOnQueries.filter(
+      (thread): thread is SubredditResponseDataModel[] => thread !== null
     );
-
-    const mostCommentedUniqueThreads = (mostCommentedThreads || []).filter(
+    const mostCommentedUniqueThreads = (mostRelevantThreads.flat() || []).filter(
       (thread, i, threads) => threads.findIndex((t) => t.permalink === thread.permalink) === i
     );
-
     if (mostCommentedUniqueThreads.length === 0) {
       return null;
     }
 
-    const threadCommentsPayload = await this.getRedditThreadComments(
-      mostCommentedUniqueThreads,
-      accessToken,
-      "",
-      5
+    const threadComments = await this.getThreadComments(mostCommentedUniqueThreads, accessToken, "", 0);
+
+    if (!Array.isArray(threadComments)) return null;
+    const uniqueMoreReplies = this.moreReplies.filter(
+      (reply, index, moreReplies) =>
+        reply.count > 0 && moreReplies.findIndex((r) => r.id === reply.id) === index
     );
-    return threadCommentsPayload?.filter((threadCommentPayload) => threadCommentPayload.comments.length > 5);
+    const threadCommentsWithMoreReplies = await this.getMoreReplies(
+      uniqueMoreReplies,
+      threadComments,
+      accessToken
+    );
+    return "hello world";
   },
 };

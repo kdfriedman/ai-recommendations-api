@@ -40,6 +40,8 @@ app.use((req, res, next) => {
   next();
 });
 
+console.log("This process is your pid " + process.pid);
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20, // Limit each IP to 5 requests per `window` (here, per 15 minutes)
