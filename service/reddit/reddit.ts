@@ -12,28 +12,33 @@ import {
   ThreadCommentReplyResponse,
   MoreReplyCommentDataModel,
   ThreadDataModel,
+  CommentDataModel,
 } from "../reddit/types";
 
 export const redditApi = {
-  consolidatedReplies: "",
+  commentReplies: [] as CommentDataModel[],
   moreReplies: [] as MoreReplyCommentDataModel[],
   conslidateCommentReplies(replies: ThreadCommentReplyResponse) {
     if (!replies?.data?.children) {
       return null;
     }
     for (const reply of replies?.data?.children) {
+      // TODO: figure out how to get link_id into moreReplies so that we can use for morechildren api later on
       if (reply.kind === "more") {
-        console.log(replies.data);
         this.moreReplies.push(reply.data);
         continue;
       }
       const formattedReply = reply.data.body.trim().replace(/\n/g, "");
-      this.consolidatedReplies += `COMMENT_START-${formattedReply}`; // TODO: after testing, remove COMMENT_START
+      this.commentReplies.push({
+        commentText: formattedReply,
+        upvotes: reply.data.ups,
+        commentId: reply.data.id,
+      });
       if (typeof reply.data.replies !== "string") {
         this.conslidateCommentReplies(reply.data.replies);
       }
     }
-    return this.consolidatedReplies;
+    return this.commentReplies;
   },
   async getOAuthToken() {
     try {
@@ -252,23 +257,25 @@ export const redditApi = {
             })
             .map((commentPayload) => {
               return {
-                commentTotal: threadPayload?.num_comments,
                 comments: commentPayload.data.children
                   // filter out mod comments
                   .filter((comment) => !comment.data.distinguished)
                   .map((comment) => {
                     // recursively search comment tree and combine all comment replies into one large string of text
-                    const commentReplies =
+                    let commentReplies =
                       typeof comment?.data?.replies !== "string"
-                        ? this.conslidateCommentReplies(comment?.data?.replies)
-                        : null;
-                    return {
-                      commentId: comment.data.id,
-                      topCommentText: comment.data.body,
+                        ? this.conslidateCommentReplies(comment?.data?.replies) || []
+                        : [];
+
+                    // add OP comment and top comment into first index of comments array
+                    commentReplies.unshift({
+                      commentText: comment.data.body,
                       upvotes: comment.data.ups,
-                      replies: commentReplies,
-                    };
-                  }),
+                      commentId: comment.data.id,
+                    });
+                    return commentReplies;
+                  })
+                  .flat(),
                 subreddit_id: threadPayload.subreddit_id,
                 id: threadPayload.id,
                 permalink: threadPayload.permalink,
@@ -356,7 +363,18 @@ export const redditApi = {
       return null;
     }
 
-    const threadComments = await this.getThreadComments(mostCommentedUniqueThreads, accessToken, "", 0);
+    const threadComments = await this.getThreadComments(
+      // TODO: remove these hard coded indices when done testing py model
+      [
+        mostCommentedUniqueThreads[0],
+        mostCommentedUniqueThreads[1],
+        mostCommentedUniqueThreads[2],
+        mostCommentedUniqueThreads[3],
+      ],
+      accessToken,
+      "",
+      0
+    );
 
     if (!Array.isArray(threadComments)) return null;
     const uniqueMoreReplies = this.moreReplies.filter(
@@ -368,6 +386,8 @@ export const redditApi = {
       threadComments,
       accessToken
     );
+
+    await fs.writeFile("threadComments.json", JSON.stringify(threadCommentsWithMoreReplies));
     return "hello world";
   },
 };

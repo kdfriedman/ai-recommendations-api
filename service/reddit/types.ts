@@ -41,7 +41,7 @@ export type SubRedditResponse = {
 export type ThreadResponseDataModel = {
   id: string;
   body: string;
-  ups: string;
+  ups: number;
   distinguished: string | null;
   replies: ThreadCommentReplyResponse | string;
 };
@@ -82,14 +82,14 @@ export type MoreReplyCommentDataModel = {
   children: string[];
 };
 
+export type CommentDataModel = {
+  commentText: string;
+  upvotes: number;
+  commentId: string;
+};
+
 export type ThreadCommentsDataModel = {
-  commentTotal: number | undefined;
-  comments: {
-    commentId: string;
-    topCommentText: string;
-    upvotes: string;
-    replies: string | null;
-  }[];
+  comments: CommentDataModel[] | null;
 };
 
 export type ThreadDataModel = SubredditResponseDataModel & ThreadCommentsDataModel;
