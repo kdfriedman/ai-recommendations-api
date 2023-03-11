@@ -2,7 +2,6 @@ import fs from "fs/promises";
 import { getData } from "../service";
 import { REDDIT_API_TYPE_PREFIXES } from "../reddit/constants";
 import { parseQueryParams } from "../util";
-import { findByValue } from "../../util/util";
 import {
   RedditApiTypePrefixes,
   OAuth2,
@@ -16,29 +15,31 @@ import {
 } from "../reddit/types";
 
 export const redditApi = {
-  commentReplies: [] as CommentDataModel[],
   moreReplies: [] as MoreReplyCommentDataModel[],
-  conslidateCommentReplies(replies: ThreadCommentReplyResponse) {
+  conslidateCommentReplies(replies: ThreadCommentReplyResponse, commentReplies: CommentDataModel[] = []) {
     if (!replies?.data?.children) {
       return null;
     }
     for (const reply of replies?.data?.children) {
       // TODO: figure out how to get link_id into moreReplies so that we can use for morechildren api later on
       if (reply.kind === "more") {
-        this.moreReplies.push(reply.data);
+        if (reply.data.children.length > 0) {
+          this.moreReplies.push(reply.data);
+        }
         continue;
       }
       const formattedReply = reply.data.body.trim().replace(/\n/g, "");
-      this.commentReplies.push({
+      commentReplies.push({
         commentText: formattedReply,
         upvotes: reply.data.ups,
         commentId: reply.data.id,
       });
       if (typeof reply.data.replies !== "string") {
-        this.conslidateCommentReplies(reply.data.replies);
+        this.conslidateCommentReplies(reply.data.replies, commentReplies);
       }
     }
-    return this.commentReplies;
+
+    return commentReplies;
   },
   async getOAuthToken() {
     try {
@@ -118,8 +119,7 @@ export const redditApi = {
       try {
         // only add after query param when paginated after id exists (next page)
         const response: SubRedditResponse = await getData(
-          `${process.env.REDDIT_API_HOST}/search/${queryParams}${
-            searchResultsPaginatedAfterID ? `&after=${searchResultsPaginatedAfterID}` : ""
+          `${process.env.REDDIT_API_HOST}/search/${queryParams}${searchResultsPaginatedAfterID ? `&after=${searchResultsPaginatedAfterID}` : ""
           }`,
           {
             method: "GET",
@@ -216,7 +216,7 @@ export const redditApi = {
           id: child?.data?.id,
           permalink: child?.data?.permalink,
           subreddit: child?.data?.subreddit,
-          selftext: child?.data?.selftext,
+          selftext: child?.data?.selftext.trim().replace(/\n/g, ""),
           kind: child?.kind,
           // had to use as keyof to handle specific object keys from const
           kindType: REDDIT_API_TYPE_PREFIXES[child?.kind as keyof RedditApiTypePrefixes] || null,
@@ -264,9 +264,8 @@ export const redditApi = {
                     // recursively search comment tree and combine all comment replies into one large string of text
                     let commentReplies =
                       typeof comment?.data?.replies !== "string"
-                        ? this.conslidateCommentReplies(comment?.data?.replies) || []
+                        ? this.conslidateCommentReplies(comment?.data?.replies, []) || []
                         : [];
-
                     // add OP comment and top comment into first index of comments array
                     commentReplies.unshift({
                       commentText: comment.data.body,
@@ -280,7 +279,7 @@ export const redditApi = {
                 id: threadPayload.id,
                 permalink: threadPayload.permalink,
                 subreddit: threadPayload.subreddit,
-                selftext: threadPayload.selftext,
+                selftext: threadPayload.selftext.trim().replace(/\n/g, ""),
                 kind: threadPayload.kind,
                 kindType: threadPayload.kindType,
                 title: threadPayload.title,
@@ -362,32 +361,19 @@ export const redditApi = {
     if (mostCommentedUniqueThreads.length === 0) {
       return null;
     }
+    console.log('mostCommentedUniqueThreads length: ', mostCommentedUniqueThreads.length)
+    const threadComments = await this.getThreadComments(mostCommentedUniqueThreads, accessToken, "", 0);
 
-    const threadComments = await this.getThreadComments(
-      // TODO: remove these hard coded indices when done testing py model
-      [
-        mostCommentedUniqueThreads[0],
-        mostCommentedUniqueThreads[1],
-        mostCommentedUniqueThreads[2],
-        mostCommentedUniqueThreads[3],
-      ],
-      accessToken,
-      "",
-      0
-    );
+    // await fs.writeFile("threadComments.json", JSON.stringify(threadComments));
 
     if (!Array.isArray(threadComments)) return null;
-    const uniqueMoreReplies = this.moreReplies.filter(
-      (reply, index, moreReplies) =>
-        reply.count > 0 && moreReplies.findIndex((r) => r.id === reply.id) === index
-    );
-    const threadCommentsWithMoreReplies = await this.getMoreReplies(
-      uniqueMoreReplies,
-      threadComments,
-      accessToken
-    );
+    console.log(this.moreReplies)
+    // const threadCommentsWithMoreReplies = await this.getMoreReplies(
+    //   uniqueMoreReplies,
+    //   threadComments,
+    //   accessToken
+    // );
 
-    await fs.writeFile("threadComments.json", JSON.stringify(threadCommentsWithMoreReplies));
     return "hello world";
   },
 };
